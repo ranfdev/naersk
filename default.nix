@@ -6,31 +6,39 @@
 , lndir
 , remarshal
 , rsync
-, runCommand
+, runCommandLocal
 , rustc
 , stdenv
 , writeText
 , zstd
-}@defaultBuildAttrs:
+} @ defaultBuildAttrs:
 
 let
-  libb = import ./lib.nix { inherit lib writeText runCommand remarshal; };
+  libb = import ./lib.nix {
+    inherit lib writeText runCommandLocal remarshal;
+  };
 
-  builtinz = builtins // import ./builtins
-    { inherit lib writeText remarshal runCommand; };
+  builtinz = builtins // import ./builtins {
+    inherit lib writeText remarshal runCommandLocal;
+  };
 
-  mkConfig = arg:
-    import ./config.nix { inherit lib arg libb builtinz; };
+  mkConfig = arg: import ./config.nix {
+    inherit lib arg libb builtinz;
+  };
 
   buildPackage = arg:
     let
       config = mkConfig arg;
-      gitDependencies =
-        libb.findGitDependencies { inherit (config) cargolock gitAllRefs gitSubmodules; };
+
+      gitDependencies = libb.findGitDependencies {
+        inherit (config) cargolock gitAllRefs gitSubmodules;
+      };
+
       cargoconfig =
         if builtinz.pathExists (toString config.root + "/.cargo/config")
-        then builtins.readFile (config.root + "/.cargo/config")
-        else null;
+          then builtins.readFile (config.root + "/.cargo/config")
+          else null;
+
       build = args: import ./build.nix (
         {
           inherit gitDependencies;
@@ -38,38 +46,43 @@ let
         } // config.buildConfig // defaultBuildAttrs // args
       );
 
-      # the dependencies from crates.io
       buildDeps =
-        build
-          {
-            pname = "${config.packageName}-deps";
-            src = libb.dummySrc {
-              inherit cargoconfig;
-              inherit (config) cargolock cargotomls copySources copySourcesFrom;
-            };
-            inherit (config) userAttrs;
-            # TODO: custom cargoTestCommands should not be needed here
-            cargoTestCommands = map (cmd: "${cmd} || true") config.buildConfig.cargoTestCommands;
-            copyTarget = true;
-            copyBins = false;
-            copyBinsFilter = ".";
-            copyDocsToSeparateOutput = false;
-            builtDependencies = [];
+        build {
+          inherit (config) userAttrs;
+
+          pname = "${config.packageName}-deps";
+
+          src = libb.dummySrc {
+            inherit cargoconfig;
+            inherit (config) cargolock cargotomls copySources copySourcesFrom;
           };
 
-      # the top-level build
+          copyTarget = true;
+          copyBins = false;
+          copyBinsFilter = ".";
+          copyDocsToSeparateOutput = false;
+          builtDependencies = [];
+
+          # TODO: custom cargoTestCommands should not be needed here
+          cargoTestCommands = map (cmd: "${cmd} || true") config.buildConfig.cargoTestCommands;
+        };
+
       buildTopLevel =
         let
-          drv =
-            build
-              {
-                pname = config.packageName;
-                inherit (config) userAttrs src;
-                builtDependencies = lib.optional (! config.isSingleStep) buildDeps;
-              };
+          drv = build {
+            inherit (config) userAttrs src;
+
+            pname = config.packageName;
+            builtDependencies = lib.optional (! config.isSingleStep) buildDeps;
+          };
+
         in
-          drv.overrideAttrs config.overrideMain;
+        drv.overrideAttrs config.overrideMain;
+
     in
-      buildTopLevel;
+    buildTopLevel;
+
 in
-{ inherit buildPackage; }
+{
+  inherit buildPackage;
+}

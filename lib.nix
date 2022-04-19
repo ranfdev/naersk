@@ -1,8 +1,8 @@
-{ lib, writeText, runCommand, remarshal }:
+{ lib, writeText, runCommandLocal, remarshal }:
 let
   builtinz =
     builtins // import ./builtins
-      { inherit lib writeText remarshal runCommand; };
+      { inherit lib writeText remarshal runCommandLocal; };
 in
 rec
 {
@@ -121,10 +121,10 @@ rec
 
   # A very minimal 'src' which makes cargo happy nonetheless
   dummySrc =
-    { cargoconfig   # string
-    , cargotomls   # attrset
-    , cargolock   # attrset
-    , copySources # list of paths that should be copied to the output
+    { cargoconfig     # string
+    , cargotomls      # attrset
+    , cargolock       # attrset
+    , copySources     # list of paths that should be copied to the output
     , copySourcesFrom # path from which to copy ${copySources}
     }:
       let
@@ -150,8 +150,9 @@ rec
           cargotomls;
 
       in
-        runCommand "dummy-src"
-          { inherit copySources copySourcesFrom cargotomlss; }
+        runCommandLocal "dummy-src" {
+          inherit copySources copySourcesFrom cargotomlss;
+        }
           ''
             mkdir -p $out/.cargo
             ${lib.optionalString (! isNull cargoconfig) "cp ${config} $out/.cargo/config"}
