@@ -63,23 +63,25 @@
 }:
 
 let
-  builtinz = builtins // import ./builtins {
-    inherit lib writeText remarshal runCommandLocal;
-  };
+  builtinz =
+    builtins // import ./builtins
+      { inherit lib writeText remarshal runCommandLocal; };
 
   drvAttrs = {
-    inherit src version remapPathPrefix;
-
     name = "${pname}-${version}";
+    inherit
+      src
+      version
+      remapPathPrefix
+      ;
+
     crate_sources = unpackedDependencies;
 
     # The cargo config with source replacement. Replaces both crates.io crates
     # and git dependencies.
     cargoconfig = builtinz.toTOML {
       source = {
-        crates-io = {
-          replace-with = "nix-sources";
-        };
+        crates-io = { replace-with = "nix-sources"; };
         nix-sources = {
           directory = unpackedDependencies;
         };
@@ -113,6 +115,7 @@ let
 
     nativeBuildInputs = [
       cargo
+      # needed at various steps in the build
       jq
       rsync
     ] ++ nativeBuildInputs;
@@ -126,6 +129,7 @@ let
 
     inherit builtDependencies;
 
+    # some environment variables
     RUSTC = "${rustc}/bin/rustc";
     cargo_release = lib.optionalString release "--release";
     cargo_options = cargoOptions;
@@ -366,7 +370,7 @@ let
   # something-else-1.2.3/src                   (-> /nix/store/...)
   # ...
   # ```
-  unpackedDependencies = symlinkJoin {
+  unpackedDependencies = symlinkJoinPassViaFile {
     name = "dependencies";
 
     paths =
@@ -374,22 +378,23 @@ let
       (map unpackGitDependency gitDependencies);
   };
 
+  # XXX: the actual crate format is not documented but in practice is a
+  # gzipped tar; we simply unpack it and introduce a ".cargo-checksum.json"
+  # file that cargo itself uses to double check the sha256
   unpackCrateDependency = { name, version, sha256 }:
     let
       crate = fetchurl {
-        inherit sha256;
-
         url = "https://crates.io/api/v1/crates/${name}/${version}/download";
+        inherit sha256;
         name = "download-${name}-${version}";
       };
-
     in
-    runCommandLocal "unpack-${name}-${version}" { }
-    ''
-      mkdir -p $out
-      tar -xzf ${crate} -C $out
-      echo '{"package":"${sha256}","files":{}}' > $out/${name}-${version}/.cargo-checksum.json
-    '';
+      runCommandLocal "unpack-${name}-${version}" {}
+        ''
+          mkdir -p $out
+          tar -xzf ${crate} -C $out
+          echo '{"package":"${sha256}","files":{}}' > $out/${name}-${version}/.cargo-checksum.json
+        '';
 
   unpackGitDependency = { checkout, key, name, url, ... }:
     runCommandLocal "unpack-${name}-${version}" {
@@ -477,22 +482,45 @@ let
       exit 1
     '';
 
-  symlinkJoin = { name, paths }:
-    runCommandLocal name {
-      inherit paths;
+  /*
+  * A copy of `symlinkJoin` from `nixpkgs` which passes the `paths` argument via a file
+  * instead of via an environment variable. This should fix the "Argument list too long"
+  * error when `paths` exceeds the limit.
+  *
+  * Create a forest of symlinks to the files in `paths'.
+  *
+  * Examples:
+  * # adds symlinks of hello to current build.
+  * { symlinkJoin, hello }:
+  * symlinkJoin { name = "myhello"; paths = [ hello ]; }
+  *
+  * # adds symlinks of hello to current build and prints "links added"
+  * { symlinkJoin, hello }:
+  * symlinkJoin { name = "myhello"; paths = [ hello ]; postBuild = "echo links added"; }
+  */
+  symlinkJoinPassViaFile =
+    args_@{ name
+         , paths
+         , preferLocalBuild ? true
+         , allowSubstitutes ? false
+         , postBuild ? ""
+         , ...
+         }:
+    let
+      args = removeAttrs args_ [ "name" "postBuild" ]
+        // { inherit preferLocalBuild allowSubstitutes;
+             passAsFile = [ "paths" ];
+             nativeBuildInputs = [ lndir ];
+           }; # pass the defaults
+    in runCommand name args
+      ''
+        mkdir -p $out
 
-      passAsFile = [ "paths" ];
-      nativeBuildInputs = [ lndir ];
-    }
-    ''
-      mkdir -p $out
-
-      for i in $(cat $pathsPath); do
-        lndir -silent $i $out
-      done
-    '';
-
+        for i in $(cat $pathsPath); do
+          lndir -silent $i $out
+        done
+        ${postBuild}
+      '';
   drv = stdenv.mkDerivation (drvAttrs // userAttrs);
-
 in
 drv.overrideAttrs override
